@@ -430,13 +430,13 @@ ${content}
                 }
             };
 
-            // 安定している gemini-1.5-flash をベースモデルとして使用
-            let targetModel = "gemini-1.5-flash";
+            // 最新の最強・安定モデル（404エラーが出ないバージョン）を指定
+            let targetModel = "gemini-2.5-flash";
             let url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             
-            // サーバー混雑(503)やリミット(429)を考慮し、リトライの間隔をさらに長めに設定
-            const delays = [3000, 6000, 10000, 20000, 30000];
+            // サーバー混雑(503)やリミット(429)を考慮し、リトライの間隔を長めに設定
+            const delays = [5000, 10000, 20000, 40000, 60000];
 
             for (let i = 0; i < 5; i++) {
                 try {
@@ -455,16 +455,9 @@ ${content}
                             errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
                         }
                         
-                        // 503(混雑), 404(未発見) の場合はモデルを切り替えてリトライ
-                        // ※429(無料枠制限)の場合はモデルを変えても意味がないため同じモデルで待機のみ行う
-                        if (response.status === 503 || response.status === 404) {
-                            if (targetModel === "gemini-1.5-flash") {
-                                targetModel = "gemini-1.5-flash-8b"; // より軽量で空いているモデルに逃げる
-                            } else if (targetModel === "gemini-1.5-flash-8b") {
-                                targetModel = "gemini-1.5-pro"; // プロモデルに逃げる
-                            } else {
-                                targetModel = "gemini-1.5-flash"; // 元に戻す
-                            }
+                        // 404(未発見) の場合は古いモデルに切り替えてリトライ
+                        if (response.status === 404) {
+                            targetModel = targetModel === "gemini-2.5-flash" ? "gemini-2.0-flash" : "gemini-1.5-flash";
                             url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
                         }
 
@@ -585,9 +578,9 @@ ${content}
                 renderReports(); 
 
                 // ▼▼ レートリミット(無料枠制限)回避のための待機処理 ▼▼
-                // 次のレポートがあり、かつAIの審査を行った場合は「4秒間」休憩する
+                // 次のレポートがあり、かつAIの審査を行った場合は「6秒間」休憩する（より安全に）
                 if (i < state.reports.length - 1 && (d.content || "").length >= 100) {
-                    await new Promise(resolve => setTimeout(resolve, 4000));
+                    await new Promise(resolve => setTimeout(resolve, 6000));
                 }
             }
 
