@@ -430,11 +430,13 @@ ${content}
                 }
             };
 
-            // 最新のモデルを優先し、エラー時にフォールバックする
-            let targetModel = "gemini-2.5-flash";
+            // 安定している gemini-1.5-flash をベースモデルとして使用
+            let targetModel = "gemini-1.5-flash";
             let url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            const delays = [1000, 2000, 4000, 8000, 16000];
+            
+            // サーバー混雑(503)やリミット(429)を考慮し、リトライの間隔をさらに長めに設定
+            const delays = [3000, 6000, 10000, 20000, 30000];
 
             for (let i = 0; i < 5; i++) {
                 try {
@@ -450,16 +452,18 @@ ${content}
                             const errData = await response.json();
                             errStr = errData.error?.message || JSON.stringify(errData);
                         } catch(parseErr) {
-                            // HTMLの404エラーページなどが返ってきてJSONパースに失敗した場合（プロキシの遮断など）
                             errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
                         }
                         
-                        // 404エラー（モデルが見つからない）の場合は、モデルを切り替えてリトライ
-                        if (response.status === 404) {
-                            if (targetModel === "gemini-2.5-flash") {
-                                targetModel = "gemini-2.0-flash";
-                            } else if (targetModel === "gemini-2.0-flash") {
-                                targetModel = "gemini-1.5-flash";
+                        // 503(混雑), 404(未発見) の場合はモデルを切り替えてリトライ
+                        // ※429(無料枠制限)の場合はモデルを変えても意味がないため同じモデルで待機のみ行う
+                        if (response.status === 503 || response.status === 404) {
+                            if (targetModel === "gemini-1.5-flash") {
+                                targetModel = "gemini-1.5-flash-8b"; // より軽量で空いているモデルに逃げる
+                            } else if (targetModel === "gemini-1.5-flash-8b") {
+                                targetModel = "gemini-1.5-pro"; // プロモデルに逃げる
+                            } else {
+                                targetModel = "gemini-1.5-flash"; // 元に戻す
                             }
                             url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
                         }
@@ -494,10 +498,13 @@ ${content}
                             suggestionMsg = "AIへの送信データ形式に問題があります。";
                         } else if (e.message.includes('HTTP 404')) {
                             reasonMsg = "AIモデルが見つかりません (HTTP 404)";
-                            suggestionMsg = `【重要】Google側のAIモデルの仕様が変更された可能性があります。\n\n詳細: ${e.message}\n\n※社内ネットワークによるブロックの可能性もあります。`;
+                            suggestionMsg = "Google側のAIモデルの仕様が変更された可能性があります。";
                         } else if (e.message.includes('HTTP 503')) {
-                            reasonMsg = "AIサーバーが一時的に混雑しています (HTTP 503)";
-                            suggestionMsg = "現在、GoogleのAIサーバーにアクセスが集中しており、処理が追いつかない状態です。これは一時的な現象ですので、数分〜数十分ほど時間を置いてから、再度チェックをお試しください。";
+                            reasonMsg = "AIサーバーが一時的に混雑しています";
+                            suggestionMsg = "現在、世界中からGoogleのAIにアクセスが集中しており、処理が追いつかない状態です。数分ほど時間を置いてから再度「一括チェック実行」を押してください。";
+                        } else if (e.message.includes('HTTP 429') || e.message.includes('exceeded your current quota')) {
+                            reasonMsg = "AIの無料利用枠の制限に達しました (HTTP 429)";
+                            suggestionMsg = "短時間に大量のチェックを行ったため、Google側の制限ストップがかかりました。約1分ほど時間を置いてから、未実行のものを再度「一括チェック」してください。";
                         }
 
                         return { 
@@ -561,6 +568,8 @@ ${content}
                 if (!formatChecks.noAiSymbols) formatErrors.push(`内容にAI生成特有の記号「*」が含まれています。`);
 
                 let aiResult = { isPass: true, ngReasons: [], improvementSuggestion: "形式エラーが存在するため、文章のAI審査をスキップしました。" };
+                
+                // 本文が一定以上ある場合のみAI通信を行う
                 if ((d.content || "").length >= 100) { 
                     aiResult = await checkContentWithAI(d.content || "");
                 } else if ((d.content || "").length === 0) {
@@ -574,6 +583,12 @@ ${content}
                 report.status = 'done';
                 report.results = { formatChecks, formatErrors, aiResult, overallPass };
                 renderReports(); 
+
+                // ▼▼ レートリミット(無料枠制限)回避のための待機処理 ▼▼
+                // 次のレポートがあり、かつAIの審査を行った場合は「4秒間」休憩する
+                if (i < state.reports.length - 1 && (d.content || "").length >= 100) {
+                    await new Promise(resolve => setTimeout(resolve, 4000));
+                }
             }
 
             state.isChecking = false;
