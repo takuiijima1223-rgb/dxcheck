@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -68,15 +68,14 @@
 
     <script>
         /** --- グローバルステートと初期設定 --- */
-        // ご指定いただいたAPIキーを定数としてハードコード（最優先で使用します）
+        // ご指定いただいたAPIキーを定数としてハードコード
         const HARDCODED_API_KEY = "AIzaSyDIJ3MQ2B093ooyeUNE1wSjHpyAhhnveOw";
 
         const defaultConfig = {
             period: "2026年1月11日～2026年2月20日（1か月10日）",
             location: "株式会社151A　self-A・151A魚津（富山県魚津市上村木1丁目8-6）",
             course: "AI＆DXアドバンス講座：最先端のビジネス活用",
-            webhookUrl: "",
-            geminiApiKey: HARDCODED_API_KEY
+            webhookUrl: ""
         };
 
         // ローカルストレージからの読み込み
@@ -98,11 +97,9 @@
             expandedRowId: null
         };
 
-        // ローカルストレージに空のキーが保存されていた場合の強制上書き処理
-        if (!state.config.geminiApiKey || state.config.geminiApiKey.trim() === "") {
-            state.config.geminiApiKey = HARDCODED_API_KEY;
-            localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
-        }
+        // 【重要】ブラウザの記憶に左右されず、常に最新のAPIキーを強制適用する
+        state.config.geminiApiKey = HARDCODED_API_KEY;
+        localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
 
         // GASのコードスニペット
         const gasCode = `function doPost(e) {
@@ -391,12 +388,8 @@
 
         /** --- AIとバリデーションロジック --- */
         const checkContentWithAI = async (content) => {
-            // APIキーの取得と、エラーの原因となる空白・改行の完全除去 (.trim()処理)
-            let apiKey = state.config.geminiApiKey;
-            if (!apiKey || apiKey.trim() === "") {
-                apiKey = HARDCODED_API_KEY;
-            }
-            apiKey = apiKey.trim();
+            // URLエンコードをして安全にAPIキーを結合する
+            const apiKey = encodeURIComponent(state.config.geminiApiKey.trim());
 
             const prompt = `
 あなたは研修報告書の厳格な審査員です。以下の「受講者のレポート内容」を審査し、合否判定とNG理由、改善提案をJSON形式で出力してください。
@@ -413,11 +406,18 @@
    - 「業務効率化に活かしたい」「様々な業務に適用したい」など、抽象的で一般的な活かし方の説明はNG。
    - 具体的に「どの業務」の「どの作業」にどう使うのかが書かれているか。
 
+【絶対遵守の出力形式】
+以下のJSONフォーマットのみを出力してください。マークダウンの装飾などは不要です。
+{
+  "isPass": false,
+  "ngReasons": ["理由1", "理由2"],
+  "improvementSuggestion": "改善案"
+}
+
 【受講者のレポート内容】
 ${content}
 `;
 
-            // より安定したJSON出力のためにシステムプロンプトとスキーマを再設定
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
                 systemInstruction: {
@@ -438,6 +438,7 @@ ${content}
                 }
             };
 
+            // 最も安定している公開モデルのエンドポイント
             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const delays = [1000, 2000, 4000, 8000, 16000];
@@ -458,6 +459,14 @@ ${content}
                     const data = await response.json();
                     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
                     
+                    // JSON形式を確実に取り出す処理
+                    text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+                    const startIndex = text.indexOf('{');
+                    const endIndex = text.lastIndexOf('}') + 1;
+                    if(startIndex !== -1 && endIndex !== -1) {
+                         text = text.substring(startIndex, endIndex);
+                    }
+                    
                     return JSON.parse(text);
                     
                 } catch (e) {
@@ -465,14 +474,14 @@ ${content}
                         console.error("Gemini API failed", e);
                         
                         let reasonMsg = e.message;
-                        let suggestionMsg = "PCのセキュリティソフト(ウイルスバスター等)や、社内ネットワーク(プロキシ)の制限によってGoogleのAIへの通信がブロックされている可能性があります。";
+                        let suggestionMsg = "ネットワーク通信に失敗しました。ご自身のPCや社内ネットワークがGoogleのAIへの通信をブロックしている可能性があります。";
                         
                         if (e.message.includes('HTTP 404')) {
-                            reasonMsg = "URLが存在しません (404 Error)";
-                            suggestionMsg = "設定したAPIキーに余分な空白や改行が含まれているか、Google側の通信設定に問題があります。";
+                            reasonMsg = "モデルが見つかりません (404 Error)";
+                            suggestionMsg = "APIの接続先が見つかりません。プログラムが最新版に更新されていない可能性があります。";
                         } else if (e.message.includes('HTTP 403') || e.message.includes('API_KEY_INVALID') || e.message.includes('HTTP 400')) {
                             reasonMsg = "APIキーが無効です (" + e.message + ")";
-                            suggestionMsg = "ソースコードに設定した「Gemini APIキー」が正しくない可能性があります。取得したキーを確認してください。";
+                            suggestionMsg = "ソースコードに設定した「Gemini APIキー」が正しくない可能性があります。";
                         }
 
                         return { 
@@ -631,9 +640,9 @@ ${content}
                             <label class="text-sm font-semibold text-indigo-700 flex items-center gap-1">
                                 <i data-lucide="key" class="w-4 h-4"></i> Gemini APIキー (初期設定済み)
                             </label>
-                            <input type="password" class="w-full mt-1 px-4 py-2 bg-white border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm" value="${escapeHTML(conf.geminiApiKey || '')}" onchange="app.updateConfig('geminiApiKey', this.value)" placeholder="AI機能を利用するためにAPIキーを入力してください">
+                            <input type="password" readonly class="w-full mt-1 px-4 py-2 bg-slate-100 border border-indigo-200 rounded-lg outline-none transition-all text-sm cursor-not-allowed" value="****************************************" title="コード内に安全に設定されています">
                             <p class="text-xs text-indigo-600 mt-2">
-                                ※ソースコード内に記述されたAPIキーが読み込まれています。そのままご利用可能です。
+                                ※ソースコード内に記述されたAPIキーが強制適用されています。そのままご利用可能です。
                             </p>
                         </div>
                         <div class="space-y-2">
