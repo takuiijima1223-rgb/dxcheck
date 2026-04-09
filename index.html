@@ -1,0 +1,842 @@
+
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>報告書 自動チェッカー</title>
+    
+    <!-- 外部ライブラリの読み込み (Tailwind CSS, Lucide Icons, SheetJS) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        /* カスタムアニメーション設定 */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in-up {
+            animation: fadeInUp 0.3s ease-out forwards;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans pb-20">
+
+    <!-- ヘッダー -->
+    <header class="bg-indigo-600 text-white shadow-md">
+        <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <i data-lucide="check-circle" class="w-7 h-7 text-indigo-200"></i>
+                <h1 class="text-xl font-bold">報告書 自動チェッカー</h1>
+            </div>
+            <div class="text-sm text-indigo-200 font-medium bg-indigo-700/50 px-3 py-1 rounded-full">
+                Single HTML App
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-6 py-8 space-y-6">
+        
+        <!-- 設定パネル用コンテナ -->
+        <div id="settings-container"></div>
+
+        <!-- アップロードゾーン -->
+        <div class="relative group" id="upload-zone">
+            <input 
+                type="file" 
+                id="file-input"
+                multiple 
+                accept=".xlsx, .csv"
+                class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                title="ファイルを選択"
+            />
+            <div id="upload-box" class="bg-indigo-50 border-2 border-dashed border-indigo-300 rounded-xl p-10 text-center transition-all group-hover:bg-indigo-100 group-hover:border-indigo-400">
+                <i data-lucide="upload-cloud" class="w-12 h-12 mx-auto text-indigo-400 mb-4 group-hover:scale-110 transition-transform duration-300"></i>
+                <h3 class="text-lg font-bold text-indigo-900 mb-2">エクセル・CSVファイルをドロップ、またはクリック</h3>
+                <p class="text-sm text-indigo-600">複数ファイルを一括でアップロードできます（様式第8-3号対応）</p>
+            </div>
+        </div>
+
+        <!-- 解析対象一覧・結果表示コンテナ -->
+        <div id="reports-container"></div>
+
+    </main>
+
+    <!-- トースト通知コンテナ -->
+    <div id="toast-container"></div>
+
+    <script>
+        /** --- グローバルステートと初期設定 --- */
+        const defaultConfig = {
+            period: "2026年1月11日～2026年2月20日（1か月10日）",
+            location: "株式会社151A　self-A・151A魚津（富山県魚津市上村木1丁目8-6）",
+            course: "AI＆DXアドバンス講座：最先端のビジネス活用",
+            webhookUrl: "" 
+        };
+
+        // ローカルストレージからの読み込み
+        let savedConfig = {};
+        try {
+            const rawConfig = localStorage.getItem('reportCheckerConfig');
+            if (rawConfig) savedConfig = JSON.parse(rawConfig);
+        } catch (e) {
+            console.error("Config load error", e);
+        }
+
+        const state = {
+            config: { ...defaultConfig, ...savedConfig },
+            reports: [],
+            isChecking: false,
+            isSending: false,
+            isConfigOpen: false,
+            isGasHelpOpen: false,
+            expandedRowId: null
+        };
+
+        // GASのコードスニペット
+        const gasCode = `function doPost(e) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    const data = JSON.parse(e.postData.contents);
+    
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow([
+        "ファイル名", "事業所名", "受講者氏名", "総合判定",
+        "【形式】事業所名", "【形式】氏名", "【形式】実施期間", "【形式】実施場所", "【形式】コース名",
+        "文字数", "形式NG詳細", "【内容】AI判定", "内容NG詳細", "内容改善案", "送信日時"
+      ]);
+    }
+    
+    data.forEach(row => {
+      sheet.appendRow([
+        row.fileName, row.companyName, row.userName, row.overallPass,
+        row.chkCompany, row.chkUser, row.chkPeriod, row.chkLocation, row.chkCourse,
+        row.contentLength, row.formatErrors, row.aiPass, row.aiNgReasons, row.improvementSuggestion,
+        new Date()
+      ]);
+    });
+    
+    return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
+  } catch (error) {
+    return ContentService.createTextOutput("Error: " + error.toString()).setMimeType(ContentService.MimeType.TEXT);
+  }
+}`;
+
+        /** --- ユーティリティ関数 --- */
+        function escapeHTML(str) {
+            if (typeof str !== 'string') return str;
+            return str.replace(/[&<>'"]/g, tag => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+            }[tag] || tag));
+        }
+
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        function saveConfig() {
+            localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
+        }
+
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const bgColor = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-blue-600';
+            const icon = type === 'success' ? 'check-circle' : 'alert-circle';
+            
+            toast.className = `fixed bottom-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 z-50 animate-fade-in-up transition-opacity duration-300`;
+            toast.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5"></i><span class="font-medium">${escapeHTML(message)}</span>`;
+            
+            container.appendChild(toast);
+            lucide.createIcons({root: toast});
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        /** --- グローバルAPIオブジェクト (HTMLから呼び出す用) --- */
+        window.app = {
+            toggleConfig: () => { state.isConfigOpen = !state.isConfigOpen; renderSettings(); },
+            toggleGasHelp: () => { state.isGasHelpOpen = !state.isGasHelpOpen; renderSettings(); },
+            updateConfig: (key, value) => {
+                state.config[key] = value;
+                saveConfig();
+            },
+            toggleRow: (id) => {
+                state.expandedRowId = state.expandedRowId === id ? null : id;
+                renderReports();
+            },
+            removeReport: (id) => {
+                state.reports = state.reports.filter(r => r.id !== id);
+                renderReports();
+            },
+            handleContentInput: (id, value) => {
+                // 文字数をリアルタイムに更新（再描画によるフォーカス外れを防ぐためDOM直接操作）
+                const countSpan = document.getElementById(`count-${id}`);
+                if (countSpan) {
+                    countSpan.textContent = `${value.length} / 300文字以上`;
+                    countSpan.className = value.length < 300 ? "text-red-500" : "text-green-600";
+                }
+            },
+            updateReportData: (id, field, value) => {
+                const report = state.reports.find(r => r.id === id);
+                if (report) {
+                    report.data[field] = value;
+                    report.status = 'pending';
+                    renderReports();
+                }
+            },
+            copyGasCode: () => {
+                const textArea = document.createElement("textarea");
+                textArea.value = gasCode;
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast('コードをコピーしました');
+                } catch (err) {
+                    showToast('コピーに失敗しました', 'error');
+                }
+                document.body.removeChild(textArea);
+            },
+            runChecks: async () => { await runChecksLogic(); },
+            sendToSpreadsheet: async () => { await sendToSpreadsheetLogic(); },
+            handleFileUploadWrapper: (files) => { handleFileUpload(files); }
+        };
+
+        /** --- ドラッグ＆ドロップとファイル入力の設定 --- */
+        const dropZone = document.getElementById('upload-zone');
+        const uploadBox = document.getElementById('upload-box');
+        const fileInput = document.getElementById('file-input');
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadBox.classList.add('bg-indigo-100', 'border-indigo-400');
+        });
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            uploadBox.classList.remove('bg-indigo-100', 'border-indigo-400');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadBox.classList.remove('bg-indigo-100', 'border-indigo-400');
+            if (e.dataTransfer.files.length) {
+                app.handleFileUploadWrapper(e.dataTransfer.files);
+            }
+        });
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                app.handleFileUploadWrapper(e.target.files);
+                e.target.value = '';
+            }
+        });
+
+        /** --- データ抽出・解析ロジック --- */
+        const extractFromGrid = (json) => {
+            let data = { companyName: '', userName: '', period: '', location: '', course: '', content: '' };
+            let inContentSection = false;
+            let contentRows = [];
+
+            for (let i = 0; i < json.length; i++) {
+                const row = json[i];
+                const rowStr = row.join("");
+                const cleanRowStr = rowStr.replace(/\s+/g, '');
+                
+                if (cleanRowStr.includes("事業所の名称") && !data.companyName) {
+                    const startIdx = row.findIndex(c => c && c.toString().replace(/\s+/g, '').includes("事業所の名称"));
+                    const endIdx = row.findIndex(c => c && c.toString().replace(/\s+/g, '').includes("受講者氏名"));
+                    if (startIdx !== -1) {
+                        data.companyName = row.slice(startIdx + 1, endIdx !== -1 ? endIdx : undefined).join("").trim();
+                    } else {
+                        data.companyName = row.slice(1).join("").replace(/^,+/, "").trim();
+                    }
+                }
+                if (cleanRowStr.includes("受講者氏名") && !data.userName) {
+                    const idx = row.findIndex(c => c && c.toString().replace(/\s+/g, '').includes("受講者氏名"));
+                    if (idx !== -1) data.userName = row.slice(idx+1).join("").trim();
+                    else data.userName = row.slice(1).join("").replace(/^,+/, "").trim();
+                }
+                if (cleanRowStr.includes("訓練の実施期間") && !data.period) {
+                    const idx = row.findIndex(c => c && c.toString().replace(/\s+/g, '').includes("訓練の実施期間"));
+                    if (idx !== -1) data.period = row.slice(idx + 1).join("").trim();
+                    else data.period = row.slice(1).join("").replace(/^,+/, "").trim();
+                }
+                if (cleanRowStr.includes("訓練の実施場所") && !data.location) {
+                    const idx = row.findIndex(c => c && c.toString().replace(/\s+/g, '').includes("訓練の実施場所"));
+                    if (idx !== -1) data.location = row.slice(idx + 1).join("").trim();
+                    else data.location = row.slice(1).join("").replace(/^,+/, "").trim();
+                }
+                if (cleanRowStr.includes("訓練コースの名称") && !data.course) {
+                    const idx = row.findIndex(c => c && c.toString().replace(/\s+/g, '').includes("訓練コースの名称"));
+                    if (idx !== -1) {
+                        let val = row.slice(idx + 1).join("").trim();
+                        if (val) data.course = val;
+                        else if (i+1 < json.length) data.course = json[i+1].join("").trim();
+                    } else {
+                        let val = row.slice(1).join("").replace(/^,+/, "").trim();
+                        if (val) data.course = val;
+                        else if (i+1 < json.length) data.course = json[i+1].join("").replace(/^,+/, "").trim();
+                    }
+                }
+
+                if (cleanRowStr.includes("内容(学んだこと") || cleanRowStr.includes("内容（学んだこと")) {
+                    inContentSection = true;
+                    continue; 
+                }
+
+                if (inContentSection) {
+                    if (cleanRowStr.includes("※以下の内容に該当する") || cleanRowStr.includes("上記の内容に誤りがない") || cleanRowStr.includes("事業主記載欄")) {
+                        inContentSection = false;
+                    } else {
+                        const text = row.join("").replace(/^,+/, "").trim();
+                        if (text) contentRows.push(text);
+                    }
+                }
+            }
+            data.content = contentRows.join("\n");
+            return data;
+        };
+
+        const parseFile = async (file) => {
+            if (file.name.endsWith('.csv')) {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const text = e.target.result;
+                        const rows = [];
+                        let inQuotes = false;
+                        let currentRow = [];
+                        let currentCell = "";
+                        for(let i=0; i<text.length; i++) {
+                            const char = text[i];
+                            if (char === '"') inQuotes = !inQuotes;
+                            else if (char === ',' && !inQuotes) {
+                                currentRow.push(currentCell); currentCell = "";
+                            } else if (char === '\n' && !inQuotes) {
+                                currentRow.push(currentCell); rows.push(currentRow);
+                                currentRow = []; currentCell = "";
+                            } else {
+                                if (char !== '\r') currentCell += char;
+                            }
+                        }
+                        if (currentCell || currentRow.length > 0) { currentRow.push(currentCell); rows.push(currentRow); }
+                        resolve(extractFromGrid(rows));
+                    };
+                    reader.readAsText(file, 'Shift_JIS'); 
+                });
+            } else {
+                return new Promise((resolve, reject) => {
+                    if (!window.XLSX) {
+                        reject(new Error("Excel library not ready."));
+                        return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = window.XLSX.read(data, {type: 'array'});
+                        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                        const json = window.XLSX.utils.sheet_to_json(sheet, {header: 1, defval: ""});
+                        resolve(extractFromGrid(json));
+                    };
+                    reader.readAsArrayBuffer(file);
+                });
+            }
+        };
+
+        const handleFileUpload = async (filesArray) => {
+            const files = Array.from(filesArray);
+            if (files.some(f => f.name.endsWith('.xlsx')) && !window.XLSX) {
+                showToast("ライブラリの読み込み中です。数秒後にもう一度お試しください。", "error");
+                return;
+            }
+
+            const newReports = [];
+            for (const file of files) {
+                try {
+                    const data = await parseFile(file);
+                    newReports.push({
+                        id: generateUUID(),
+                        fileName: file.name,
+                        data: data,
+                        status: 'pending',
+                        results: null
+                    });
+                } catch (err) {
+                    console.error(err);
+                    showToast(`${file.name}の読み込みに失敗しました。`, "error");
+                }
+            }
+            
+            state.reports = [...state.reports, ...newReports];
+            if (newReports.length > 0) {
+                showToast(`${newReports.length}件のファイルを読み込みました。`);
+            }
+            renderReports();
+        };
+
+        /** --- AIとバリデーションロジック --- */
+        const checkContentWithAI = async (content) => {
+            const apiKey = ""; // Canvas環境が自動注入します
+            const prompt = `
+あなたは研修報告書の厳格な審査員です。以下の「受講者のレポート内容」を審査し、合否判定とNG理由、改善提案をJSON形式で出力してください。
+
+【チェック基準（厳格に判定してください）】
+1. 単なる感想文、意見文になっていないか
+   - 「〜でよかった」「〜が面白かった」「勉強になった」といった感想のみはNG。
+   - 研修で「具体的にできるようになったこと」や「実務での活かし方」が書かれているか。
+2. 生成AIに丸投げしていないか
+   - AI特有の無機質な箇条書き、一般的な用語の羅列はNG。
+   - 主語が「生成AIは〜」となっており、受講者自身の言葉になっていないものはNG。
+   - 普段の実務と生成AIの結びつきが、自身の言葉で語られているか。
+3. 活かし方に具体性があるか
+   - 「業務効率化に活かしたい」「様々な業務に適用したい」など、抽象的で一般的な活かし方の説明はNG。
+   - 具体的に「どの業務」の「どの作業」にどう使うのかが書かれているか。
+
+【受講者のレポート内容】
+${content}
+`;
+
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: {
+                    parts: [{ text: "あなたは厳格な研修報告書審査員です。JSON形式(isPass, ngReasons, improvementSuggestion)で結果を返してください。" }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            isPass: { type: "BOOLEAN" },
+                            ngReasons: { type: "ARRAY", items: { type: "STRING" } },
+                            improvementSuggestion: { type: "STRING" }
+                        },
+                        required: ["isPass", "ngReasons", "improvementSuggestion"]
+                    }
+                }
+            };
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            const delays = [1000, 2000, 4000, 8000, 16000];
+
+            for (let i = 0; i < 5; i++) {
+                try {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    const data = await response.json();
+                    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    return JSON.parse(text);
+                } catch (e) {
+                    if (i === 4) {
+                        console.error("Gemini API failed", e);
+                        return { isPass: false, ngReasons: ["AIによる自動審査がタイムアウトまたはエラーとなりました。"], improvementSuggestion: "システムエラーのためアドバイスを生成できませんでした。" };
+                    }
+                    await sleep(delays[i]);
+                }
+            }
+        };
+
+        const runChecksLogic = async () => {
+            state.isChecking = true;
+            renderReports(); // ボタンを無効化・ロード状態にする
+            
+            const pendingReports = state.reports.filter(r => r.status === 'pending');
+            if (pendingReports.length === 0) {
+                showToast("チェック対象がありません。", "error");
+                state.isChecking = false;
+                renderReports();
+                return;
+            }
+
+            for (let i = 0; i < state.reports.length; i++) {
+                const report = state.reports[i];
+                if (report.status === 'done') continue;
+
+                // 処理中の状態を画面に反映
+                report.status = 'processing';
+                renderReports(); 
+
+                const formatErrors = [];
+                const d = report.data;
+                const normalize = s => s ? s.replace(/\s+/g, '').replace(/[（）()]/g, '') : '';
+                
+                const formatChecks = {
+                    companyName: !!d.companyName,
+                    userName: !!d.userName,
+                    period: normalize(d.period).includes(normalize(state.config.period)),
+                    location: normalize(d.location).includes(normalize(state.config.location)),
+                    course: normalize(d.course).includes(normalize(state.config.course)),
+                    contentLength: (d.content || "").length,
+                    contentLengthValid: (d.content || "").length >= 300,
+                    noAiSymbols: !(d.content || "").includes('*') && !(d.content || "").includes('＊')
+                };
+
+                if (!formatChecks.companyName) formatErrors.push("事業所の名称が記載されていません。");
+                if (!formatChecks.userName) formatErrors.push("受講者氏名が記載されていません。");
+                if (!formatChecks.period) formatErrors.push(`訓練の実施期間が設定と異なります。(抽出: ${d.period || '空欄'})`);
+                if (!formatChecks.location) formatErrors.push(`訓練の実施場所が設定と異なります。(抽出: ${d.location || '空欄'})`);
+                if (!formatChecks.course) formatErrors.push(`訓練コースの名称が設定と異なります。(抽出: ${d.course || '空欄'})`);
+                if (!formatChecks.contentLengthValid) formatErrors.push(`内容の文字数が不足しています。(現在 ${formatChecks.contentLength}文字 / 300文字以上必要)`);
+                if (!formatChecks.noAiSymbols) formatErrors.push(`内容にAI生成特有の記号「*」が含まれています。`);
+
+                let aiResult = { isPass: true, ngReasons: [], improvementSuggestion: "形式エラーが存在するため、文章のAI審査をスキップしました。" };
+                if ((d.content || "").length >= 100) { 
+                    aiResult = await checkContentWithAI(d.content || "");
+                } else if ((d.content || "").length === 0) {
+                    aiResult = { isPass: false, ngReasons: ["内容が白紙です。"], improvementSuggestion: "学んだことや今後の活かし方を記入してください。" };
+                } else {
+                    aiResult = { isPass: false, ngReasons: ["内容が極端に短すぎます。"], improvementSuggestion: "研修でできるようになったことや、今後の業務への活かし方を具体的に記載してください。" };
+                }
+
+                const overallPass = formatErrors.length === 0 && aiResult.isPass;
+                
+                // 結果の保存
+                report.status = 'done';
+                report.results = { formatChecks, formatErrors, aiResult, overallPass };
+                renderReports(); // 1件終わるごとに画面更新
+            }
+
+            state.isChecking = false;
+            showToast("すべてのチェックが完了しました。");
+            renderReports();
+        };
+
+        const sendToSpreadsheetLogic = async () => {
+            if (!state.config.webhookUrl) {
+                showToast('スプレッドシート連携（Webhook URL）が設定されていません。設定パネルをご確認ください。', 'error');
+                state.isConfigOpen = true;
+                renderSettings();
+                return;
+            }
+
+            state.isSending = true;
+            renderReports();
+
+            const toCircleCross = (isValid) => isValid ? "〇" : "×";
+
+            const payloadData = state.reports.filter(r => r.status === 'done').map(r => {
+                const res = r.results;
+                const fc = res.formatChecks;
+                const d = r.data;
+                
+                return {
+                    fileName: r.fileName,
+                    companyName: d.companyName,
+                    userName: d.userName,
+                    overallPass: res.overallPass ? "合格" : "再提出",
+                    chkCompany: toCircleCross(fc.companyName),
+                    chkUser: toCircleCross(fc.userName),
+                    chkPeriod: toCircleCross(fc.period),
+                    chkLocation: toCircleCross(fc.location),
+                    chkCourse: toCircleCross(fc.course),
+                    contentLength: fc.contentLength,
+                    formatErrors: res.formatErrors.join("\n") || "なし",
+                    aiPass: toCircleCross(res.aiResult.isPass),
+                    aiNgReasons: res.aiResult.isPass ? "なし" : res.aiResult.ngReasons.join("\n"),
+                    improvementSuggestion: res.aiResult.improvementSuggestion
+                };
+            });
+
+            try {
+                await fetch(state.config.webhookUrl, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payloadData)
+                });
+                showToast(`${payloadData.length}件のデータをスプレッドシートに転送しました！`);
+            } catch (err) {
+                console.error('Send error:', err);
+                showToast('送信に失敗しました。URLが正しいか確認してください。', 'error');
+            } finally {
+                state.isSending = false;
+                renderReports();
+            }
+        };
+
+        /** --- 描画 (レンダリング) ロジック --- */
+        function renderSettings() {
+            const container = document.getElementById('settings-container');
+            const conf = state.config;
+            
+            let html = `
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div 
+                    class="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-colors"
+                    onclick="app.toggleConfig()"
+                >
+                    <div class="flex items-center gap-2 text-slate-700 font-medium">
+                        <i data-lucide="settings" class="w-5 h-5 text-indigo-500"></i>
+                        <span>チェック基準・システム連携の設定</span>
+                    </div>
+                    <i data-lucide="${state.isConfigOpen ? 'chevron-up' : 'chevron-down'}" class="w-5 h-5 text-slate-400"></i>
+                </div>
+            `;
+            
+            if (state.isConfigOpen) {
+                html += `
+                <div class="p-6 bg-white space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="text-sm font-semibold text-slate-600">訓練の実施期間</label>
+                            <input type="text" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm" value="${escapeHTML(conf.period)}" onchange="app.updateConfig('period', this.value)">
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-sm font-semibold text-slate-600">訓練コースの名称</label>
+                            <input type="text" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm" value="${escapeHTML(conf.course)}" onchange="app.updateConfig('course', this.value)">
+                        </div>
+                        <div class="space-y-2 md:col-span-2">
+                            <label class="text-sm font-semibold text-slate-600">訓練の実施場所 (事業所名と住所)</label>
+                            <input type="text" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm" value="${escapeHTML(conf.location)}" onchange="app.updateConfig('location', this.value)">
+                        </div>
+                    </div>
+
+                    <div class="pt-4 border-t border-slate-200">
+                        <div class="space-y-2">
+                            <label class="text-sm font-semibold text-emerald-700 flex items-center gap-1">
+                                <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> スプレッドシート連携 (Webhook URL)
+                            </label>
+                            <input type="text" class="w-full px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-sm text-slate-700" value="${escapeHTML(conf.webhookUrl)}" onchange="app.updateConfig('webhookUrl', this.value)" placeholder="https://script.google.com/macros/s/XXXXXXX/exec">
+                            <p class="text-xs text-slate-500">※転送先のスプレッドシート（GAS）で発行したウェブアプリURLを入力してください。</p>
+                        </div>
+                        
+                        <div class="mt-4 border border-slate-200 rounded-lg overflow-hidden">
+                            <button class="w-full px-4 py-2 text-left bg-slate-50 hover:bg-slate-100 text-sm font-medium text-slate-600 flex justify-between items-center" onclick="app.toggleGasHelp()">
+                                💡 スプレッドシート連携 (GAS) の設定方法
+                                <i data-lucide="${state.isGasHelpOpen ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4"></i>
+                            </button>
+                            ${state.isGasHelpOpen ? `
+                            <div class="p-5 text-sm text-slate-700 bg-white space-y-5">
+                                <div class="bg-indigo-50 text-indigo-800 p-3 rounded border border-indigo-100 font-semibold text-sm">
+                                    自動転送を有効にするため、以下の手順でスプレッドシートに設定を行ってください。
+                                </div>
+                                <ol class="list-decimal list-inside space-y-2">
+                                    <li>転送先のスプレッドシートを開きます。</li>
+                                    <li>メニューの <strong>「拡張機能」 ＞ 「Apps Script」</strong> をクリックします。</li>
+                                    <li>開いたエディタに、以下のコードをすべてコピーして貼り付け、保存（Ctrl+S または 💾ボタン）します。</li>
+                                </ol>
+                                
+                                <div class="relative group bg-slate-900 rounded-lg overflow-hidden border border-slate-700">
+                                    <div class="flex justify-between items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
+                                        <span class="text-xs text-slate-400 font-mono">コード.gs</span>
+                                        <button onclick="app.copyGasCode()" class="flex items-center gap-1.5 text-xs text-indigo-300 hover:text-white transition-colors">
+                                            <i data-lucide="copy" class="w-3.5 h-3.5"></i> コピー
+                                        </button>
+                                    </div>
+                                    <pre class="p-4 overflow-x-auto text-xs font-mono text-emerald-400 leading-relaxed">${escapeHTML(gasCode)}</pre>
+                                </div>
+
+                                <div class="border-t border-slate-100 pt-4">
+                                    <p class="font-semibold text-slate-800 mb-3">コードを保存したら、続けて以下の手順でURLを発行します。</p>
+                                    <ol class="list-decimal list-inside space-y-2">
+                                        <li value="4">画面右上の青いボタン <strong>「デプロイ」 ＞ 「新しいデプロイ」</strong> をクリックします。</li>
+                                        <li value="5">種類の選択（歯車アイコン）で <strong>「ウェブアプリ」</strong> を選びます。</li>
+                                        <li value="6">設定を以下のようにします：
+                                            <ul class="list-disc list-inside ml-6 mt-1 text-slate-500">
+                                                <li>説明： (任意)</li>
+                                                <li>実行するユーザー： <strong>「自分」</strong></li>
+                                                <li>アクセスできるユーザー： <strong>「全員」</strong></li>
+                                            </ul>
+                                        </li>
+                                        <li value="7"><strong>「デプロイ」</strong> を押し、アクセス承認を許可します。</li>
+                                        <li value="8">表示された <strong>「ウェブアプリの URL」</strong> をコピーし、アプリ側の「Webhook URL」欄に貼り付けてください。</li>
+                                    </ol>
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
+                `;
+            }
+            html += `</div>`;
+            container.innerHTML = html;
+            lucide.createIcons({ root: container });
+        }
+
+        function renderReports() {
+            const container = document.getElementById('reports-container');
+            if (state.reports.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            const canCheck = state.reports.some(r => r.status === 'pending') && !state.isChecking;
+            const canSend = state.reports.some(r => r.status === 'done') && !state.isChecking && !state.isSending;
+
+            let html = `
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+                        <i data-lucide="file-spreadsheet" class="w-5 h-5 text-slate-500"></i>
+                        解析対象一覧 (${state.reports.length}件)
+                    </h2>
+                    <div class="flex flex-wrap gap-3 w-full md:w-auto">
+                        <button onclick="app.sendToSpreadsheet()" ${!canSend ? 'disabled' : ''} class="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white hover:bg-emerald-600 rounded-lg font-bold shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm flex-1 md:flex-none justify-center">
+                            ${state.isSending ? '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> 送信中...' : '<i data-lucide="send" class="w-4 h-4"></i> スプレッドシートへ自動転送'}
+                        </button>
+                        <button onclick="app.runChecks()" ${!canCheck ? 'disabled' : ''} class="flex items-center gap-2 px-5 py-2 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg font-bold shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-1 md:flex-none justify-center">
+                            ${state.isChecking ? '<i data-lucide="loader-2" class="w-[18px] h-[18px] animate-spin"></i> チェック実行中...' : '<i data-lucide="check-circle" class="w-[18px] h-[18px]"></i> 一括チェック実行'}
+                        </button>
+                    </div>
+                </div>
+                <div class="divide-y divide-slate-100">
+            `;
+
+            state.reports.forEach(report => {
+                const isExpanded = state.expandedRowId === report.id;
+                const rData = report.data;
+                const res = report.results;
+
+                let badge = '';
+                if (report.status === 'pending') badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200"><i data-lucide="settings" class="w-3 h-3"></i> 未実行</span>`;
+                else if (report.status === 'processing') badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 border border-indigo-200"><i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> 実行中</span>`;
+                else if (report.status === 'done' && res?.overallPass) badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200"><i data-lucide="check-circle" class="w-3 h-3"></i> 合格</span>`;
+                else if (report.status === 'done' && !res?.overallPass) badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200"><i data-lucide="x-circle" class="w-3 h-3"></i> NGあり</span>`;
+
+                html += `
+                <div class="transition-colors hover:bg-slate-50/50">
+                    <div class="px-6 py-4 flex items-center justify-between cursor-pointer" onclick="app.toggleRow('${report.id}')">
+                        <div class="flex items-center gap-4 flex-1 min-w-0">
+                            <div class="w-24 shrink-0">${badge}</div>
+                            <div class="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 text-sm">
+                                <span class="font-semibold text-slate-900 truncate w-32 shrink-0">${escapeHTML(rData.userName || "氏名未取得")}</span>
+                                <span class="text-slate-500 truncate text-xs sm:text-sm">${escapeHTML(report.fileName)}</span>
+                            </div>
+                            ${res && !res.overallPass ? `
+                            <div class="hidden md:flex text-xs text-red-600 gap-3 px-4 shrink-0">
+                                ${res.formatErrors.length > 0 ? `<span>形式NG: ${res.formatErrors.length}件</span>` : ''}
+                                ${!res.aiResult.isPass ? `<span>内容NG: ${res.aiResult.ngReasons.length}件</span>` : ''}
+                            </div>
+                            ` : ''}
+                        </div>
+                        <div class="flex items-center gap-3 shrink-0 ml-4">
+                            <button onclick="event.stopPropagation(); app.removeReport('${report.id}')" class="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded" title="削除">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                            <i data-lucide="${isExpanded ? 'chevron-up' : 'chevron-down'}" class="w-5 h-5 text-slate-400"></i>
+                        </div>
+                    </div>
+                `;
+
+                if (isExpanded) {
+                    html += `<div class="px-6 pb-6 pt-2 bg-slate-50/80 border-t border-slate-100">`;
+                    
+                    if (report.status === 'done' && res && !res.overallPass) {
+                        html += `
+                        <div class="mb-6 bg-red-50/50 border border-red-100 rounded-lg p-5">
+                            <h4 class="font-bold text-red-800 flex items-center gap-2 mb-3">
+                                <i data-lucide="alert-circle" class="w-4 h-4"></i> 指摘事項
+                            </h4>
+                            <div class="space-y-4">
+                                ${res.formatErrors.length > 0 ? `
+                                <div>
+                                    <p class="text-sm font-semibold text-red-700 mb-1 border-b border-red-200 pb-1">形式エラー</p>
+                                    <ul class="list-disc list-inside text-sm text-red-600 space-y-1">
+                                        ${res.formatErrors.map(e => `<li>${escapeHTML(e)}</li>`).join('')}
+                                    </ul>
+                                </div>` : ''}
+                                ${!res.aiResult.isPass ? `
+                                <div>
+                                    <p class="text-sm font-semibold text-red-700 mb-1 border-b border-red-200 pb-1">文章内容エラー (AI判定)</p>
+                                    <ul class="list-disc list-inside text-sm text-red-600 space-y-1">
+                                        ${res.aiResult.ngReasons.map(e => `<li>${escapeHTML(e)}</li>`).join('')}
+                                    </ul>
+                                    <div class="mt-3 bg-white p-3 rounded border border-red-100">
+                                        <p class="text-xs font-bold text-slate-500 mb-1">💡 改善提案</p>
+                                        <p class="text-sm text-slate-700 leading-relaxed">${escapeHTML(res.aiResult.improvementSuggestion)}</p>
+                                    </div>
+                                </div>` : ''}
+                            </div>
+                        </div>`;
+                    }
+
+                    if (report.status === 'done' && res && res.overallPass) {
+                        html += `
+                        <div class="mb-6 bg-green-50 border border-green-100 rounded-lg p-4 flex items-start gap-3">
+                            <i data-lucide="check-circle" class="w-4 h-4 text-green-600 mt-0.5 shrink-0"></i>
+                            <div>
+                                <h4 class="font-bold text-green-800 mb-1">パーフェクト！</h4>
+                                <p class="text-sm text-green-700">形式も内容も基準を満たしています。</p>
+                                ${res.aiResult.improvementSuggestion ? `
+                                <p class="text-sm text-green-800 mt-2 p-2 bg-white/60 rounded border border-green-200">
+                                    <strong>AIからのコメント: </strong>${escapeHTML(res.aiResult.improvementSuggestion)}
+                                </p>` : ''}
+                            </div>
+                        </div>`;
+                    }
+
+                    html += `
+                        <div class="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                            <div class="bg-slate-100 px-4 py-2 border-b border-slate-200 flex items-center gap-2">
+                                <i data-lucide="edit-3" class="w-4 h-4 text-slate-500"></i>
+                                <span class="text-sm font-semibold text-slate-700">抽出データの確認・手動修正</span>
+                                <span class="text-xs text-slate-500 ml-auto">※修正するとステータスが未実行に戻ります</span>
+                            </div>
+                            <div class="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="space-y-1">
+                                    <label class="text-xs font-semibold text-slate-500">事業所の名称</label>
+                                    <input type="text" value="${escapeHTML(rData.companyName)}" onchange="app.updateReportData('${report.id}', 'companyName', this.value)" class="w-full text-sm p-2 border border-slate-200 rounded outline-none focus:border-indigo-400">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="text-xs font-semibold text-slate-500">受講者氏名</label>
+                                    <input type="text" value="${escapeHTML(rData.userName)}" onchange="app.updateReportData('${report.id}', 'userName', this.value)" class="w-full text-sm p-2 border border-slate-200 rounded outline-none focus:border-indigo-400">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="text-xs font-semibold text-slate-500">実施期間</label>
+                                    <input type="text" value="${escapeHTML(rData.period)}" onchange="app.updateReportData('${report.id}', 'period', this.value)" class="w-full text-sm p-2 border border-slate-200 rounded outline-none focus:border-indigo-400">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="text-xs font-semibold text-slate-500">コース名称</label>
+                                    <input type="text" value="${escapeHTML(rData.course)}" onchange="app.updateReportData('${report.id}', 'course', this.value)" class="w-full text-sm p-2 border border-slate-200 rounded outline-none focus:border-indigo-400">
+                                </div>
+                                <div class="space-y-1 md:col-span-2">
+                                    <label class="text-xs font-semibold text-slate-500">実施場所</label>
+                                    <input type="text" value="${escapeHTML(rData.location)}" onchange="app.updateReportData('${report.id}', 'location', this.value)" class="w-full text-sm p-2 border border-slate-200 rounded outline-none focus:border-indigo-400">
+                                </div>
+                                <div class="space-y-1 md:col-span-2">
+                                    <label class="text-xs font-semibold text-slate-500 flex justify-between">
+                                        内容（学んだこと、今後の活かし方）
+                                        <span id="count-${report.id}" class="${(rData.content||'').length < 300 ? 'text-red-500' : 'text-green-600'}">${(rData.content||'').length} / 300文字以上</span>
+                                    </label>
+                                    <textarea 
+                                        oninput="app.handleContentInput('${report.id}', this.value)"
+                                        onchange="app.updateReportData('${report.id}', 'content', this.value)" 
+                                        class="w-full text-sm p-3 border border-slate-200 rounded outline-none focus:border-indigo-400 min-h-[120px]"
+                                    >${escapeHTML(rData.content)}</textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+                }
+
+                html += `</div>`;
+            });
+
+            html += `</div></div>`;
+            container.innerHTML = html;
+            lucide.createIcons({ root: container });
+        }
+
+        /** --- 初期化 --- */
+        function initApp() {
+            renderSettings();
+            renderReports();
+        }
+
+        // DOMが読み込まれたら描画スタート
+        document.addEventListener('DOMContentLoaded', initApp);
+
+    </script>
+</body>
+</html>
