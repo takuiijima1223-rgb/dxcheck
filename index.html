@@ -405,30 +405,25 @@
    - 「業務効率化に活かしたい」「様々な業務に適用したい」など、抽象的で一般的な活かし方の説明はNG。
    - 具体的に「どの業務」の「どの作業」にどう使うのかが書かれているか。
 
+【絶対遵守の出力形式】
+以下のJSONフォーマットのみを出力してください。マークダウンの装飾などは不要です。
+{
+  "isPass": false,
+  "ngReasons": ["理由1", "理由2"],
+  "improvementSuggestion": "改善案"
+}
+
 【受講者のレポート内容】
 ${content}
 `;
 
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
-                systemInstruction: {
-                    parts: [{ text: "あなたは厳格な研修報告書審査員です。JSON形式(isPass, ngReasons, improvementSuggestion)で結果を返してください。" }]
-                },
                 generationConfig: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            isPass: { type: "BOOLEAN" },
-                            ngReasons: { type: "ARRAY", items: { type: "STRING" } },
-                            improvementSuggestion: { type: "STRING" }
-                        },
-                        required: ["isPass", "ngReasons", "improvementSuggestion"]
-                    }
+                    temperature: 0.2
                 }
             };
 
-            // 【重要変更】外部からPC環境でAPIを呼び出せるように、一般公開モデル (gemini-1.5-flash) を指定
             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const delays = [1000, 2000, 4000, 8000, 16000];
@@ -440,18 +435,46 @@ ${content}
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(payload)
                     });
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    
+                    if (!response.ok) {
+                        const errData = await response.json().catch(() => ({}));
+                        throw new Error(`HTTP ${response.status} - ${errData.error?.message || 'Unknown Error'}`);
+                    }
+                    
                     const data = await response.json();
-                    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    
+                    // JSON形式を確実に取り出す処理（APIがマークダウンコードブロックを返してきた場合への対策）
+                    text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+                    const startIndex = text.indexOf('{');
+                    const endIndex = text.lastIndexOf('}') + 1;
+                    if(startIndex !== -1 && endIndex !== -1) {
+                         text = text.substring(startIndex, endIndex);
+                    }
+                    
                     return JSON.parse(text);
+                    
                 } catch (e) {
                     if (i === 4) {
                         console.error("Gemini API failed", e);
-                        // エラーが起きた場合は、詳細なエラーメッセージを画面にも表示するように変更
+                        
+                        let reasonMsg = e.message;
+                        let suggestionMsg = "PCのセキュリティソフト(ウイルスバスター等)や、社内ネットワーク(プロキシ)の制限によってGoogleのAIへの通信がブロックされている可能性があります。";
+                        
+                        if (e.message.includes('HTTP 403') || e.message.includes('API_KEY_INVALID')) {
+                            reasonMsg = "APIキーが無効、または権限がありません (403 Error)";
+                            suggestionMsg = "設定パネルの「Gemini APIキー」が正しく入力されているか確認してください。コピーミスや空白が入っている可能性があります。";
+                        } else if (e.message.includes('HTTP 400')) {
+                            reasonMsg = "リクエストの形式が不正です (400 Error)";
+                            suggestionMsg = "AIへの送信データ形式、またはモデルの制限に問題があります。";
+                        } else if (e.message.includes('Failed to fetch')) {
+                            reasonMsg = "ネットワーク通信が遮断されました (Failed to fetch)";
+                        }
+
                         return { 
                             isPass: false, 
-                            ngReasons: [`通信エラーが発生しました (${e.message})`], 
-                            improvementSuggestion: "PCのセキュリティソフト(ウイルスバスター等)や、社内ネットワーク(プロキシ)の制限によってGoogleのAIへの通信がブロックされている可能性があります。" 
+                            ngReasons: [`AI通信エラー (${reasonMsg})`], 
+                            improvementSuggestion: suggestionMsg
                         };
                     }
                     await sleep(delays[i]);
