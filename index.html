@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -72,7 +72,8 @@
             period: "2026年1月11日～2026年2月20日（1か月10日）",
             location: "株式会社151A　self-A・151A魚津（富山県魚津市上村木1丁目8-6）",
             course: "AI＆DXアドバンス講座：最先端のビジネス活用",
-            webhookUrl: "" 
+            webhookUrl: "",
+            geminiApiKey: "AIzaSyDIJ3MQ2B093ooyeUNE1wSjHpyAhhnveOw" // APIキーをあらかじめ設定
         };
 
         // ローカルストレージからの読み込み
@@ -93,6 +94,13 @@
             isGasHelpOpen: false,
             expandedRowId: null
         };
+
+        // もしローカルストレージに保存されているAPIキーが空だった場合（初期利用時など）、
+        // ハードコードされたデフォルトのキーを強制的に設定します。
+        if (!state.config.geminiApiKey) {
+            state.config.geminiApiKey = defaultConfig.geminiApiKey;
+            localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
+        }
 
         // GASのコードスニペット
         const gasCode = `function doPost(e) {
@@ -177,7 +185,6 @@
                 renderReports();
             },
             handleContentInput: (id, value) => {
-                // 文字数をリアルタイムに更新（再描画によるフォーカス外れを防ぐためDOM直接操作）
                 const countSpan = document.getElementById(`count-${id}`);
                 if (countSpan) {
                     countSpan.textContent = `${value.length} / 300文字以上`;
@@ -382,7 +389,7 @@
 
         /** --- AIとバリデーションロジック --- */
         const checkContentWithAI = async (content) => {
-            const apiKey = ""; // Canvas環境が自動注入します
+            const apiKey = state.config.geminiApiKey; // ユーザー設定から取得
             const prompt = `
 あなたは研修報告書の厳格な審査員です。以下の「受講者のレポート内容」を審査し、合否判定とNG理由、改善提案をJSON形式で出力してください。
 
@@ -447,6 +454,13 @@ ${content}
         };
 
         const runChecksLogic = async () => {
+            if (!state.config.geminiApiKey) {
+                showToast("設定パネルを開き、「Gemini APIキー」を入力してください。", "error");
+                state.isConfigOpen = true;
+                renderSettings();
+                return;
+            }
+
             state.isChecking = true;
             renderReports(); // ボタンを無効化・ロード状態にする
             
@@ -587,6 +601,15 @@ ${content}
                 html += `
                 <div class="p-6 bg-white space-y-6">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2 md:col-span-2 bg-indigo-50 p-4 rounded-lg border border-indigo-100">
+                            <label class="text-sm font-semibold text-indigo-700 flex items-center gap-1">
+                                <i data-lucide="key" class="w-4 h-4"></i> Gemini APIキー (初期設定済み)
+                            </label>
+                            <input type="password" class="w-full mt-1 px-4 py-2 bg-white border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm" value="${escapeHTML(conf.geminiApiKey || '')}" onchange="app.updateConfig('geminiApiKey', this.value)" placeholder="AI機能を利用するためにAPIキーを入力してください">
+                            <p class="text-xs text-indigo-600 mt-2">
+                                ※ソースコード内に記述されたAPIキーが読み込まれています。そのままご利用可能です。
+                            </p>
+                        </div>
                         <div class="space-y-2">
                             <label class="text-sm font-semibold text-slate-600">訓練の実施期間</label>
                             <input type="text" class="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm" value="${escapeHTML(conf.period)}" onchange="app.updateConfig('period', this.value)">
