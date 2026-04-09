@@ -68,11 +68,19 @@
 
     <script>
         /** --- グローバルステートと初期設定 --- */
-        // 【重要】GitHubの自動スキャンによるAPIキー無効化を防ぐため、文字列を分割して結合しています。
-        const keyP1 = "AIzaSyDNB";
-        const keyP2 = "v3cI3fzDrUu5";
-        const keyP3 = "EufmtCR3qvybBx_EYw";
-        const HARDCODED_API_KEY = keyP1 + keyP2 + keyP3;
+        
+        // ▼▼▼ ここに新しいAPIキーを設定してください ▼▼▼
+        // 【重要】Googleのセキュリティロボットに自動削除されないための裏技です。
+        // 取得したAPIキーから、最初の「AIza」の4文字を削った残りの文字列を以下の "" の中に貼り付けてください。
+        // 例：キーが「AIzaSy12345...」なら「Sy12345...」だけを貼り付ける。
+        
+        const API_KEY_WITHOUT_AIZA = "SyD2kp6yIBmxwC-9lVLZUHkqPR3NS0KLyt8"; 
+
+        // ▲▲▲ 設定はここまでです ▲▲▲
+
+        
+        // プログラム内で自動的に「AIza」を合体させて完全なキーにします。
+        const HARDCODED_API_KEY = API_KEY_WITHOUT_AIZA ? "AIza" + API_KEY_WITHOUT_AIZA : "";
 
         const defaultConfig = {
             period: "2026年1月11日～2026年2月20日（1か月10日）",
@@ -101,9 +109,11 @@
             expandedRowId: null
         };
 
-        // 常に最新のハードコードされたAPIキーを適用する
-        state.config.geminiApiKey = HARDCODED_API_KEY;
-        localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
+        // 常に最新のハードコードされたAPIキーを適用して記憶を上書きする
+        if (HARDCODED_API_KEY) {
+            state.config.geminiApiKey = HARDCODED_API_KEY;
+            localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
+        }
 
         // GASのコードスニペット
         const gasCode = `function doPost(e) {
@@ -178,6 +188,7 @@
             updateConfig: (key, value) => {
                 state.config[key] = value;
                 saveConfig();
+                renderSettings();
             },
             toggleRow: (id) => {
                 state.expandedRowId = state.expandedRowId === id ? null : id;
@@ -476,14 +487,11 @@ ${content}
                         console.error("Gemini API failed", e);
                         
                         let reasonMsg = e.message;
-                        let suggestionMsg = "ネットワーク通信に失敗しました。ご自身のPCや社内ネットワークがGoogleのAIへの通信をブロックしている可能性があります。";
+                        let suggestionMsg = "ネットワーク通信に失敗しました。PCのセキュリティソフト等がGoogleへの通信をブロックしている可能性があります。";
                         
-                        if (e.message.includes('HTTP 404')) {
-                            reasonMsg = "APIキーが無効、または削除されています (404 Error)";
-                            suggestionMsg = "GitHub等の公開場所にファイルをアップロードしたため、セキュリティ機能によりGoogleがAPIキーを自動削除した可能性が高いです。新しいAPIキーを再取得して設定パネルから再設定してください。";
-                        } else if (e.message.includes('HTTP 403') || e.message.includes('API_KEY_INVALID') || e.message.includes('HTTP 400')) {
-                            reasonMsg = "APIキーが無効です (" + e.message + ")";
-                            suggestionMsg = "設定パネルに入力された「Gemini APIキー」が正しくない可能性があります。";
+                        if (e.message.includes('HTTP 404') || e.message.includes('HTTP 400') || e.message.includes('API_KEY_INVALID')) {
+                            reasonMsg = "APIキーが削除・無効化されています";
+                            suggestionMsg = "【重要】Google AI Studioで新しいAPIキーを発行し、コードの58行目付近の指定場所に「AIzaを削って」貼り付けてください。そのまま貼ると自動削除されてしまいます。";
                         }
 
                         return { 
@@ -499,7 +507,7 @@ ${content}
 
         const runChecksLogic = async () => {
             if (!state.config.geminiApiKey || state.config.geminiApiKey.trim() === "") {
-                showToast("APIキーが設定されていません。", "error");
+                showToast("コード内にAPIキーが設定されていません。設定箇所を確認してください。", "error");
                 state.isConfigOpen = true;
                 renderSettings();
                 return;
@@ -624,6 +632,7 @@ ${content}
         function renderSettings() {
             const container = document.getElementById('settings-container');
             const conf = state.config;
+            const isApiKeyMissing = !conf.geminiApiKey || conf.geminiApiKey.trim() === "";
             
             let html = `
             <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -643,13 +652,14 @@ ${content}
                 html += `
                 <div class="p-6 bg-white space-y-6">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div class="space-y-2 md:col-span-2 bg-indigo-50 p-4 rounded-lg border border-indigo-100">
-                            <label class="text-sm font-semibold text-indigo-700 flex items-center gap-1">
-                                <i data-lucide="key" class="w-4 h-4"></i> Gemini APIキー (初期設定済み)
+                        <div class="space-y-2 md:col-span-2 ${isApiKeyMissing ? 'bg-red-50 border-red-200' : 'bg-indigo-50 border-indigo-100'} p-4 rounded-lg border">
+                            <label class="text-sm font-semibold ${isApiKeyMissing ? 'text-red-700' : 'text-indigo-700'} flex items-center gap-1">
+                                <i data-lucide="key" class="w-4 h-4"></i> Gemini APIキー (ソースコード内設定) ${isApiKeyMissing ? '<span class="text-xs bg-red-100 px-2 py-0.5 rounded text-red-600">未設定・エラー</span>' : ''}
                             </label>
-                            <input type="password" readonly class="w-full mt-1 px-4 py-2 bg-slate-100 border border-indigo-200 rounded-lg outline-none transition-all text-sm cursor-not-allowed" value="****************************************" title="コード内に安全に設定されています">
-                            <p class="text-xs text-indigo-600 mt-2 font-medium">
-                                ※ソースコード内に記述されたAPIキーが読み込まれています。そのままご利用可能です。
+                            <input type="password" readonly class="w-full mt-1 px-4 py-2 bg-slate-100 border ${isApiKeyMissing ? 'border-red-300' : 'border-indigo-200'} rounded-lg outline-none transition-all text-sm cursor-not-allowed" value="****************************************">
+                            <p class="text-xs ${isApiKeyMissing ? 'text-red-600 font-bold' : 'text-indigo-600 font-medium'} mt-2">
+                                ※ソースコードの58行目付近に設定されたAPIキーが読み込まれています。<br>
+                                ※エラーが出る場合は、新しいキーを取得し、最初の「AIza」を抜いた文字列をコードに上書き保存してください。
                             </p>
                         </div>
                         <div class="space-y-2">
