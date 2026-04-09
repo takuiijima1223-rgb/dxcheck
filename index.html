@@ -419,23 +419,12 @@
 ${content}
 `;
 
+            // 【修正】400 Bad Request 回避のため、より安全でシンプルな送信データ形式に変更
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
-                systemInstruction: {
-                    parts: [{ text: "あなたは厳格な研修報告書審査員です。指定されたJSON形式(isPass, ngReasons, improvementSuggestion)で結果を返してください。" }]
-                },
                 generationConfig: {
                     temperature: 0.2,
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            isPass: { type: "BOOLEAN" },
-                            ngReasons: { type: "ARRAY", items: { type: "STRING" } },
-                            improvementSuggestion: { type: "STRING" }
-                        },
-                        required: ["isPass", "ngReasons", "improvementSuggestion"]
-                    }
+                    responseMimeType: "application/json"
                 }
             };
 
@@ -473,11 +462,18 @@ ${content}
                         console.error("Gemini API failed", e);
                         
                         let reasonMsg = e.message;
-                        let suggestionMsg = "ネットワーク通信に失敗しました。PCのセキュリティソフト等がGoogleへの通信をブロックしている可能性があります。";
+                        let suggestionMsg = "ネットワーク通信に失敗しました。";
                         
-                        if (e.message.includes('HTTP 404') || e.message.includes('HTTP 400') || e.message.includes('API_KEY_INVALID')) {
-                            reasonMsg = "APIキーが削除・無効化されています";
-                            suggestionMsg = "【重要】Google AI Studioで『新しいAPIキー』を発行し、必ず【この画面の設定パネル】に入力してください（コード内には絶対に書かないでください）。";
+                        // エラーの種類に応じて正確なメッセージを表示
+                        if (e.message.includes('HTTP 403') || e.message.includes('API_KEY_INVALID')) {
+                            reasonMsg = "APIキーが無効、または権限がありません";
+                            suggestionMsg = "設定したAPIキーが誤っているか、無効化されています。「設定パネル」から正しいキーを再設定してください。";
+                        } else if (e.message.includes('HTTP 400')) {
+                            reasonMsg = "不正なリクエスト (HTTP 400)";
+                            suggestionMsg = "AIへの送信データ形式に問題があります。テキストの内容や長さを見直してください。";
+                        } else if (e.message.includes('HTTP 404')) {
+                            reasonMsg = "エンドポイント未発見 (HTTP 404)";
+                            suggestionMsg = "APIの接続先URLが見つかりません。プログラムの更新が必要です。";
                         }
 
                         return { 
