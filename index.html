@@ -1,4 +1,4 @@
-!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -69,28 +69,12 @@
     <script>
         /** --- グローバルステートと初期設定 --- */
         
-        // 【超重要】GitHubの強力なセキュリティロボット(Secret Scanning)によるAPIキーの自動削除を完全に防ぐため、
-        // いただいたキーを暗号化（Base64）し、さらに細かく分割して埋め込んでいます。これでロボットからは絶対に検知されません。
-        const _p1 = "QUl6YVN5RD";
-        const _p2 = "JrcDZ5SUJt";
-        const _p3 = "eHdDLTlsVk";
-        const _p4 = "xaVUhrcVBS";
-        const _p5 = "M05TMEtMeXQ4";
-        
-        let HARDCODED_API_KEY = "";
-        try {
-            // 暗号化された文字列を実行時に合体・復元して本来のキーに戻します
-            HARDCODED_API_KEY = atob(_p1 + _p2 + _p3 + _p4 + _p5);
-        } catch(e) {
-            console.error("Key decode failed");
-        }
-
         const defaultConfig = {
             period: "2026年1月11日～2026年2月20日（1か月10日）",
             location: "株式会社151A　self-A・151A魚津（富山県魚津市上村木1丁目8-6）",
             course: "AI＆DXアドバンス講座：最先端のビジネス活用",
             webhookUrl: "",
-            geminiApiKey: HARDCODED_API_KEY
+            geminiApiKey: "" // コード内には絶対に書かず、画面から入力させます
         };
 
         // ローカルストレージからの読み込み
@@ -112,9 +96,9 @@
             expandedRowId: null
         };
 
-        // 常に最新のハードコードされたAPIキーを適用して記憶を強制上書きする
-        if (HARDCODED_API_KEY) {
-            state.config.geminiApiKey = HARDCODED_API_KEY;
+        // 過去の無効化されたキーの記憶をリセット
+        if (state.config.geminiApiKey && (state.config.geminiApiKey.includes("AIzaSyDIJ") || state.config.geminiApiKey.includes("AIzaSyD2k") || state.config.geminiApiKey.includes("AIzaSyCiP"))) {
+            state.config.geminiApiKey = "";
             localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
         }
 
@@ -493,7 +477,7 @@ ${content}
                         
                         if (e.message.includes('HTTP 404') || e.message.includes('HTTP 400') || e.message.includes('API_KEY_INVALID')) {
                             reasonMsg = "APIキーが削除・無効化されています";
-                            suggestionMsg = "【重要】前回いただいたAPIキーもすでにGoogleに削除されてしまっているようです。お手数ですがGoogle AI Studioで『新しいAPIキー』をもう一度発行し、このチャットに貼り付けて教えてください！すぐに暗号化したコードをお渡しします。";
+                            suggestionMsg = "【重要】Google AI Studioで『新しいAPIキー』を発行し、必ず【この画面の設定パネル】に入力してください（コード内には絶対に書かないでください）。";
                         }
 
                         return { 
@@ -509,7 +493,7 @@ ${content}
 
         const runChecksLogic = async () => {
             if (!state.config.geminiApiKey || state.config.geminiApiKey.trim() === "") {
-                showToast("コード内にAPIキーが設定されていません。設定箇所を確認してください。", "error");
+                showToast("APIキーが設定されていません。設定パネルから入力してください。", "error");
                 state.isConfigOpen = true;
                 renderSettings();
                 return;
@@ -656,11 +640,12 @@ ${content}
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div class="space-y-2 md:col-span-2 ${isApiKeyMissing ? 'bg-red-50 border-red-200' : 'bg-indigo-50 border-indigo-100'} p-4 rounded-lg border">
                             <label class="text-sm font-semibold ${isApiKeyMissing ? 'text-red-700' : 'text-indigo-700'} flex items-center gap-1">
-                                <i data-lucide="key" class="w-4 h-4"></i> Gemini APIキー (ソースコード内に暗号化して設定済み) ${isApiKeyMissing ? '<span class="text-xs bg-red-100 px-2 py-0.5 rounded text-red-600">未設定・エラー</span>' : ''}
+                                <i data-lucide="key" class="w-4 h-4"></i> Gemini APIキー (必須) ${isApiKeyMissing ? '<span class="text-xs bg-red-100 px-2 py-0.5 rounded text-red-600">未設定・または無効</span>' : '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">ブラウザに保存済み</span>'}
                             </label>
-                            <input type="password" readonly class="w-full mt-1 px-4 py-2 bg-slate-100 border ${isApiKeyMissing ? 'border-red-300' : 'border-indigo-200'} rounded-lg outline-none transition-all text-sm cursor-not-allowed" value="****************************************">
+                            <input type="password" class="w-full mt-1 px-4 py-2 bg-white border ${isApiKeyMissing ? 'border-red-300 focus:ring-red-500' : 'border-indigo-200 focus:ring-indigo-500'} rounded-lg focus:ring-2 outline-none transition-all text-sm" value="${escapeHTML(conf.geminiApiKey || '')}" onchange="app.updateConfig('geminiApiKey', this.value)" placeholder="Google AI Studioで新しく取得したAPIキーを貼り付けてください">
                             <p class="text-xs ${isApiKeyMissing ? 'text-red-600 font-bold' : 'text-indigo-600 font-medium'} mt-2">
-                                ※ソースコード内に難読化されて設定されたAPIキーが読み込まれています。そのままご利用可能です。
+                                ※ここに貼り付けたキーはあなたのPCのブラウザに安全に記憶されるため、次回から入力不要です。<br>
+                                ※【超重要】ソースコード内にAPIキーを直接書き込むと、Googleに即座に削除されます。必ずこの画面から入力してください。
                             </p>
                         </div>
                         <div class="space-y-2">
