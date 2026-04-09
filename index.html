@@ -419,7 +419,6 @@
 ${content}
 `;
 
-            // 【修正】400 Bad Request 回避のため、より安全でシンプルな送信データ形式に変更
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: {
@@ -428,7 +427,8 @@ ${content}
                 }
             };
 
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+            // 最新の確実なエンドポイントを指定
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const delays = [1000, 2000, 4000, 8000, 16000];
 
@@ -441,8 +441,15 @@ ${content}
                     });
                     
                     if (!response.ok) {
-                        const errData = await response.json().catch(() => ({}));
-                        throw new Error(`HTTP ${response.status} - ${errData.error?.message || 'Unknown Error'}`);
+                        let errStr = "Unknown Error";
+                        try {
+                            const errData = await response.json();
+                            errStr = errData.error?.message || JSON.stringify(errData);
+                        } catch(parseErr) {
+                            // HTMLの404エラーページなどが返ってきてJSONパースに失敗した場合（プロキシの遮断など）
+                            errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
+                        }
+                        throw new Error(`HTTP ${response.status} - ${errStr}`);
                     }
                     
                     const data = await response.json();
@@ -464,21 +471,20 @@ ${content}
                         let reasonMsg = e.message;
                         let suggestionMsg = "ネットワーク通信に失敗しました。";
                         
-                        // エラーの種類に応じて正確なメッセージを表示
                         if (e.message.includes('HTTP 403') || e.message.includes('API_KEY_INVALID')) {
                             reasonMsg = "APIキーが無効、または権限がありません";
                             suggestionMsg = "設定したAPIキーが誤っているか、無効化されています。「設定パネル」から正しいキーを再設定してください。";
                         } else if (e.message.includes('HTTP 400')) {
                             reasonMsg = "不正なリクエスト (HTTP 400)";
-                            suggestionMsg = "AIへの送信データ形式に問題があります。テキストの内容や長さを見直してください。";
+                            suggestionMsg = "AIへの送信データ形式に問題があります。";
                         } else if (e.message.includes('HTTP 404')) {
-                            reasonMsg = "エンドポイント未発見 (HTTP 404)";
-                            suggestionMsg = "APIの接続先URLが見つかりません。プログラムの更新が必要です。";
+                            reasonMsg = "通信が遮断されました (HTTP 404)";
+                            suggestionMsg = `【重要】会社や組織のネットワーク（セキュリティ・プロキシ）がGoogleのAIへの通信を強制ブロックしています。\n\n詳細: ${e.message}\n\n【解決策】スマホのテザリングや、自宅のWi-Fiなど制限のないネットワークでお試しください。`;
                         }
 
                         return { 
                             isPass: false, 
-                            ngReasons: [`通信エラーが発生しました (${reasonMsg})`], 
+                            ngReasons: [`通信エラー (${reasonMsg})`], 
                             improvementSuggestion: suggestionMsg
                         };
                     }
