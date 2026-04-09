@@ -421,14 +421,18 @@ ${content}
 
             const payload = {
                 contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: {
+                    parts: [{ text: "あなたは厳格な研修報告書審査員です。指定されたJSON形式(isPass, ngReasons, improvementSuggestion)で結果を返してください。" }]
+                },
                 generationConfig: {
                     temperature: 0.2,
                     responseMimeType: "application/json"
                 }
             };
 
-            // 最新の確実なエンドポイントを指定
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
+            // 最新のモデルを優先し、エラー時にフォールバックする
+            let targetModel = "gemini-2.5-flash";
+            let url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             const delays = [1000, 2000, 4000, 8000, 16000];
 
@@ -449,6 +453,17 @@ ${content}
                             // HTMLの404エラーページなどが返ってきてJSONパースに失敗した場合（プロキシの遮断など）
                             errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
                         }
+                        
+                        // 404エラー（モデルが見つからない）の場合は、モデルを切り替えてリトライ
+                        if (response.status === 404) {
+                            if (targetModel === "gemini-2.5-flash") {
+                                targetModel = "gemini-2.0-flash";
+                            } else if (targetModel === "gemini-2.0-flash") {
+                                targetModel = "gemini-1.5-flash";
+                            }
+                            url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+                        }
+
                         throw new Error(`HTTP ${response.status} - ${errStr}`);
                     }
                     
@@ -478,8 +493,8 @@ ${content}
                             reasonMsg = "不正なリクエスト (HTTP 400)";
                             suggestionMsg = "AIへの送信データ形式に問題があります。";
                         } else if (e.message.includes('HTTP 404')) {
-                            reasonMsg = "通信が遮断されました (HTTP 404)";
-                            suggestionMsg = `【重要】会社や組織のネットワーク（セキュリティ・プロキシ）がGoogleのAIへの通信を強制ブロックしています。\n\n詳細: ${e.message}\n\n【解決策】スマホのテザリングや、自宅のWi-Fiなど制限のないネットワークでお試しください。`;
+                            reasonMsg = "AIモデルが見つかりません (HTTP 404)";
+                            suggestionMsg = `【重要】Google側のAIモデルの仕様が変更された可能性があります。\n\n詳細: ${e.message}\n\n※社内ネットワークによるブロックの可能性もあります。`;
                         }
 
                         return { 
