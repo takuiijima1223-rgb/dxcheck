@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -74,7 +74,7 @@
             location: "株式会社151A　self-A・151A魚津（富山県魚津市上村木1丁目8-6）",
             course: "AI＆DXアドバンス講座：最先端のビジネス活用",
             webhookUrl: "",
-            geminiApiKey: "" 
+            geminiApiKey: "" // コード内には絶対に書かず、画面から入力させます
         };
 
         // ローカルストレージからの読み込み
@@ -95,6 +95,12 @@
             isGasHelpOpen: false,
             expandedRowId: null
         };
+
+        // 過去の無効化されたキーの記憶をリセット
+        if (state.config.geminiApiKey && (state.config.geminiApiKey.includes("AIzaSyDIJ") || state.config.geminiApiKey.includes("AIzaSyD2k") || state.config.geminiApiKey.includes("AIzaSyCiP"))) {
+            state.config.geminiApiKey = "";
+            localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
+        }
 
         // GASのコードスニペット
         const gasCode = `function doPost(e) {
@@ -166,7 +172,7 @@
             setTimeout(() => {
                 toast.style.opacity = '0';
                 setTimeout(() => toast.remove(), 300);
-            }, 4000);
+            }, 5000); // 表示時間を少し長めにする
         }
 
         /** --- グローバルAPIオブジェクト (HTMLから呼び出す用) --- */
@@ -440,9 +446,10 @@ ${content}
                 }
             };
 
-            // 最も安定している gemini-1.5-flash をメインに使用
-            let targetModel = "gemini-1.5-flash";
+            // 成功実績のある「gemini-2.5-flash」をメインモデルとして使用
+            let targetModel = "gemini-2.5-flash";
             let url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             for (let i = 0; i < 5; i++) {
                 try {
@@ -461,9 +468,15 @@ ${content}
                             errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
                         }
                         
-                        // 503(混雑) または 404(未発見) の場合は、空いている別モデル(1.5-flash-8b等)に切り替えてリトライ
+                        // 404(未発見) や 503(混雑) の場合はモデルを切り替えてリトライ
                         if (response.status === 404 || response.status === 503) {
-                            targetModel = targetModel === "gemini-1.5-flash" ? "gemini-1.5-flash-8b" : "gemini-1.5-flash";
+                            if (targetModel === "gemini-2.5-flash") {
+                                targetModel = "gemini-2.0-flash";
+                            } else if (targetModel === "gemini-2.0-flash") {
+                                targetModel = "gemini-1.5-flash";
+                            } else {
+                                targetModel = "gemini-2.5-flash";
+                            }
                             url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
                         }
 
@@ -500,7 +513,7 @@ ${content}
                             suggestionMsg = "Google側のAIモデルの仕様が変更された可能性があります。";
                         } else if (e.message.includes('HTTP 503')) {
                             reasonMsg = "AIサーバーが一時的に混雑しています";
-                            suggestionMsg = "現在、世界中からGoogleのAIにアクセスが集中しており、処理が追いつかない状態です。数分ほど時間を置いてから再度「一括チェック実行」を押してください。";
+                            suggestionMsg = "現在、世界中からGoogleのAIにアクセスが集中しており、処理が追いつかない状態です。数分ほど時間を置いてから再度お試しください。";
                         } else if (e.message.includes('HTTP 429') || e.message.includes('quota')) {
                             reasonMsg = "通信の制限に達しました (HTTP 429)";
                             suggestionMsg = "Googleの無料枠制限を超過したため、処理を中断しました。しばらく時間を置いてからお試しください。";
@@ -514,14 +527,16 @@ ${content}
                         };
                     }
                     
-                    // 一時待機ロジック
+                    // 一時待機ロジック (即死させず、しっかり待つ)
                     let waitTime = 5000;
                     if (e.message.includes('HTTP 429') || e.message.includes('quota')) {
-                        waitTime = 15000; // 429の場合は少し長めに待つ
-                        showToast(`Google AIの制限により一時待機中... (自動で再開します)`, 'info');
+                        waitTime = 45000; // 429の場合は余裕を持って45秒待つ
+                        showToast(`Google AIの制限により一時待機中... (約45秒後に自動再開します)`, 'info');
                     } else if (e.message.includes('HTTP 503')) {
-                        waitTime = 8000;
+                        waitTime = 10000;
                         showToast(`サーバー混雑のため待機中... (自動で別ルートを試します)`, 'info');
+                    } else if (e.message.includes('HTTP 404')) {
+                        waitTime = 3000;
                     }
                     await new Promise(r => setTimeout(r, waitTime));
                 }
@@ -605,9 +620,9 @@ ${content}
                 renderReports(); 
 
                 // ▼▼ レートリミット(無料枠制限)回避のための待機処理 ▼▼
-                // 次のレポートがあり、かつAIの審査を行った場合は「6秒間」休憩する（1分間に10件の安全ペース）
+                // 次のレポートがあり、かつAIの審査を行った場合は「15秒間」休憩する（1分間に最大4件の超安全ペース）
                 if (i < state.reports.length - 1 && (d.content || "").length >= 100) {
-                    await new Promise(resolve => setTimeout(resolve, 6000));
+                    await new Promise(resolve => setTimeout(resolve, 15000));
                 }
             }
 
@@ -707,7 +722,7 @@ ${content}
                             <input type="password" class="w-full mt-1 px-4 py-2 bg-white border ${isApiKeyMissing ? 'border-red-300 focus:ring-red-500' : 'border-indigo-200 focus:ring-indigo-500'} rounded-lg focus:ring-2 outline-none transition-all text-sm" value="${escapeHTML(conf.geminiApiKey || '')}" onchange="app.updateConfig('geminiApiKey', this.value)" placeholder="Google AI Studioで新しく取得したAPIキーを貼り付けてください">
                             <p class="text-xs ${isApiKeyMissing ? 'text-red-600 font-bold' : 'text-indigo-600 font-medium'} mt-2">
                                 ※ここに貼り付けたキーはあなたのPCのブラウザに安全に記憶されるため、次回から入力不要です。<br>
-                                ※【超重要】ソースコード内には絶対にキーを書き込まないでください。
+                                ※【超重要】キーは他人に知られないよう管理してください。
                             </p>
                         </div>
                         <div class="space-y-2">
