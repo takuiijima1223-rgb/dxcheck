@@ -153,11 +153,18 @@
         function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
-            const bgColor = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-blue-600';
-            const icon = type === 'success' ? 'check-circle' : 'alert-circle';
             
+            // typeが 'info' の場合は青色にする（待機中のお知らせ用）
+            let bgColor = 'bg-blue-600';
+            let icon = 'alert-circle';
+            if (type === 'success') { bgColor = 'bg-green-600'; icon = 'check-circle'; }
+            else if (type === 'error') { bgColor = 'bg-red-600'; icon = 'alert-circle'; }
+            else if (type === 'info') { bgColor = 'bg-indigo-500'; icon = 'loader-2'; }
+            
+            const iconClass = type === 'info' ? 'animate-spin' : '';
+
             toast.className = `fixed bottom-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 z-50 animate-fade-in-up transition-opacity duration-300`;
-            toast.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5"></i><span class="font-medium">${escapeHTML(message)}</span>`;
+            toast.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5 ${iconClass}"></i><span class="font-medium">${escapeHTML(message)}</span>`;
             
             container.appendChild(toast);
             lucide.createIcons({root: toast});
@@ -430,13 +437,13 @@ ${content}
                 }
             };
 
-            // 最新の最強・安定モデル（404エラーが出ないバージョン）を指定
-            let targetModel = "gemini-2.5-flash";
+            let targetModel = "gemini-1.5-flash";
             let url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
             
-            // サーバー混雑(503)やリミット(429)を考慮し、リトライの間隔を長めに設定
-            const delays = [5000, 10000, 20000, 40000, 60000];
+            // 【重要】Googleからの「37秒待って」等の要求に応えられるよう、待機時間を大幅に延長
+            // 1回目失敗: 8秒待機, 2回目: 20秒待機, 3回目: 45秒待機, 4回目: 65秒待機
+            const delays = [8000, 20000, 45000, 65000];
 
             for (let i = 0; i < 5; i++) {
                 try {
@@ -455,9 +462,9 @@ ${content}
                             errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
                         }
                         
-                        // 404(未発見) の場合は古いモデルに切り替えてリトライ
+                        // 404(未発見) の場合はモデルを切り替えてリトライ
                         if (response.status === 404) {
-                            targetModel = targetModel === "gemini-2.5-flash" ? "gemini-2.0-flash" : "gemini-1.5-flash";
+                            targetModel = targetModel === "gemini-1.5-flash" ? "gemini-2.0-flash" : "gemini-1.5-flash";
                             url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
                         }
 
@@ -478,7 +485,7 @@ ${content}
                     
                 } catch (e) {
                     if (i === 4) {
-                        console.error("Gemini API failed", e);
+                        console.error("Gemini API failed after 5 retries", e);
                         
                         let reasonMsg = e.message;
                         let suggestionMsg = "ネットワーク通信に失敗しました。";
@@ -497,14 +504,20 @@ ${content}
                             suggestionMsg = "現在、世界中からGoogleのAIにアクセスが集中しており、処理が追いつかない状態です。数分ほど時間を置いてから再度「一括チェック実行」を押してください。";
                         } else if (e.message.includes('HTTP 429') || e.message.includes('exceeded your current quota')) {
                             reasonMsg = "AIの無料利用枠の制限に達しました (HTTP 429)";
-                            suggestionMsg = "短時間に大量のチェックを行ったため、Google側の制限ストップがかかりました。約1分ほど時間を置いてから、未実行のものを再度「一括チェック」してください。";
+                            suggestionMsg = "Googleからの待機要請（リミット制限）を超過しました。しばらく時間を置いてから、未実行のものを再度「一括チェック」してください。";
                         }
 
                         return { 
                             isPass: false, 
                             ngReasons: [`通信エラー (${reasonMsg})`], 
-                            improvementSuggestion: suggestionMsg
+                            improvementSuggestion: suggestionMsg,
+                            isCriticalError: true
                         };
+                    }
+                    
+                    // 途中のリトライ時、429エラーなら画面に通知を出して安心させる
+                    if (e.message.includes('HTTP 429') || e.message.includes('exceeded your current quota')) {
+                        showToast(`Google AIの制限により待機しています... (自動で再開します)`, 'info');
                     }
                     await sleep(delays[i]);
                 }
@@ -565,6 +578,16 @@ ${content}
                 // 本文が一定以上ある場合のみAI通信を行う
                 if ((d.content || "").length >= 100) { 
                     aiResult = await checkContentWithAI(d.content || "");
+                    
+                    // 重大な通信エラーが発生した場合は全体処理を安全に中断する
+                    if (aiResult.isCriticalError && (aiResult.ngReasons[0].includes('403') || aiResult.ngReasons[0].includes('404') || aiResult.ngReasons[0].includes('400'))) {
+                        report.status = 'done';
+                        report.results = { formatChecks, formatErrors, aiResult, overallPass: false };
+                        renderReports();
+                        showToast("通信エラーが発生したため、一括チェックを中断しました。", "error");
+                        state.isChecking = false;
+                        return;
+                    }
                 } else if ((d.content || "").length === 0) {
                     aiResult = { isPass: false, ngReasons: ["内容が白紙です。"], improvementSuggestion: "学んだことや今後の活かし方を記入してください。" };
                 } else {
@@ -578,9 +601,9 @@ ${content}
                 renderReports(); 
 
                 // ▼▼ レートリミット(無料枠制限)回避のための待機処理 ▼▼
-                // 次のレポートがあり、かつAIの審査を行った場合は「6秒間」休憩する（より安全に）
+                // 次のレポートがあり、かつAIの審査を行った場合は「12秒間」休憩する（さらに安全にペースを落とす）
                 if (i < state.reports.length - 1 && (d.content || "").length >= 100) {
-                    await new Promise(resolve => setTimeout(resolve, 6000));
+                    await new Promise(resolve => setTimeout(resolve, 12000));
                 }
             }
 
@@ -673,7 +696,7 @@ ${content}
                             <input type="password" class="w-full mt-1 px-4 py-2 bg-white border ${isApiKeyMissing ? 'border-red-300 focus:ring-red-500' : 'border-indigo-200 focus:ring-indigo-500'} rounded-lg focus:ring-2 outline-none transition-all text-sm" value="${escapeHTML(conf.geminiApiKey || '')}" onchange="app.updateConfig('geminiApiKey', this.value)" placeholder="Google AI Studioで新しく取得したAPIキーを貼り付けてください">
                             <p class="text-xs ${isApiKeyMissing ? 'text-red-600 font-bold' : 'text-indigo-600 font-medium'} mt-2">
                                 ※ここに貼り付けたキーはあなたのPCのブラウザに安全に記憶されるため、次回から入力不要です。<br>
-                                ※【超重要】ソースコード内にAPIキーを直接書き込むと、Googleに即座に削除されます。必ずこの画面から入力してください。
+                                ※【超重要】キーは他人に知られないよう管理してください。
                             </p>
                         </div>
                         <div class="space-y-2">
