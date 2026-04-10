@@ -406,6 +406,8 @@
 
         /** --- AIとバリデーションロジック --- */
         const checkContentWithAI = async (content) => {
+            // ここで環境変数のAPIキーを利用可能であればそちらを優先することも可能ですが、
+            // 設定パネルから入力されたキーを尊重する元のロジックを保持します。
             const apiKey = encodeURIComponent(state.config.geminiApiKey.trim());
 
             const prompt = `
