@@ -440,11 +440,8 @@ ${content}
                 }
             };
 
-            let targetModel = "gemini-1.5-flash";
+            let targetModel = "gemini-2.5-flash";
             let url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            
-            const delays = [8000, 20000, 45000, 65000];
 
             for (let i = 0; i < 5; i++) {
                 try {
@@ -461,17 +458,6 @@ ${content}
                             errStr = errData.error?.message || JSON.stringify(errData);
                         } catch(parseErr) {
                             errStr = "社内ネットワーク等による通信ブロック(HTMLが返却されました)";
-                        }
-                        
-                        // 404(未発見) や 503(混雑) の場合はモデルを切り替えてリトライ
-                        if (response.status === 404 || response.status === 503) {
-                            targetModel = targetModel === "gemini-1.5-flash" ? "gemini-2.0-flash" : "gemini-1.5-flash";
-                            url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-                        }
-                        
-                        // 429(レートリミット)の場合は即座にエラーとして扱い、全体を止める（無駄なリトライで完全ブロックされるのを防ぐ）
-                        if (response.status === 429) {
-                             throw new Error(`HTTP 429 - Quota Exceeded`);
                         }
 
                         throw new Error(`HTTP ${response.status} - ${errStr}`);
@@ -490,8 +476,8 @@ ${content}
                     return JSON.parse(text);
                     
                 } catch (e) {
-                    if (i === 4 || e.message.includes('HTTP 429')) {
-                        console.error("Gemini API failed", e);
+                    if (i === 4) {
+                        console.error("Gemini API failed after 5 retries", e);
                         
                         let reasonMsg = e.message;
                         let suggestionMsg = "ネットワーク通信に失敗しました。";
@@ -508,9 +494,9 @@ ${content}
                         } else if (e.message.includes('HTTP 503')) {
                             reasonMsg = "AIサーバーが一時的に混雑しています";
                             suggestionMsg = "現在、世界中からGoogleのAIにアクセスが集中しており、処理が追いつかない状態です。数分ほど時間を置いてから再度「一括チェック実行」を押してください。";
-                        } else if (e.message.includes('HTTP 429') || e.message.includes('exceeded your current quota')) {
+                        } else if (e.message.includes('HTTP 429') || e.message.includes('quota')) {
                             reasonMsg = "通信の制限に達しました (HTTP 429)";
-                            suggestionMsg = "【重要】1日の利用上限に達したか、過去のキーが他人に悪用され枠が枯渇しています。別のGoogleアカウント（個人のGmail等）で新しいAPIキーを取り直して設定してください。";
+                            suggestionMsg = "Googleの無料枠制限を超過したため、処理を中断しました。しばらく時間を置いてからお試しください。";
                         }
 
                         return { 
@@ -520,7 +506,17 @@ ${content}
                             isCriticalError: true
                         };
                     }
-                    await sleep(delays[i]);
+                    
+                    // ▼▼ 修正箇所：即死させず、AIの要求通りに正しく待機する ▼▼
+                    let waitTime = 10000; // 基本10秒待機
+                    if (e.message.includes('HTTP 429') || e.message.includes('quota')) {
+                        waitTime = 40000; // 429エラーなら長めに40秒待機
+                        showToast(`Google AIの制限により一時待機中... (約40秒後に自動再開します)`, 'info');
+                    } else if (e.message.includes('HTTP 503')) {
+                        waitTime = 20000;
+                        showToast(`サーバー混雑のため待機中... (約20秒後に自動再開します)`, 'info');
+                    }
+                    await new Promise(r => setTimeout(r, waitTime));
                 }
             }
         };
@@ -602,9 +598,9 @@ ${content}
                 renderReports(); 
 
                 // ▼▼ レートリミット(無料枠制限)回避のための待機処理 ▼▼
-                // 次のレポートがあり、かつAIの審査を行った場合は「15秒間」休憩する（1分間に最大4件の超安全ペース）
+                // 次のレポートがあり、かつAIの審査を行った場合は「12秒間」休憩する
                 if (i < state.reports.length - 1 && (d.content || "").length >= 100) {
-                    await new Promise(resolve => setTimeout(resolve, 15000));
+                    await new Promise(resolve => setTimeout(resolve, 12000));
                 }
             }
 
