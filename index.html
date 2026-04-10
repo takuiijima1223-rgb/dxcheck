@@ -74,7 +74,7 @@
             location: "株式会社151A　self-A・151A魚津（富山県魚津市上村木1丁目8-6）",
             course: "AI＆DXアドバンス講座：最先端のビジネス活用",
             webhookUrl: "",
-            geminiApiKey: "" // コード内には絶対に書かず、画面から入力させます
+            geminiApiKey: "" 
         };
 
         // ローカルストレージからの読み込み
@@ -95,12 +95,6 @@
             isGasHelpOpen: false,
             expandedRowId: null
         };
-
-        // 過去の無効化・制限オーバーになったキーの記憶を安全のためにリセット
-        if (state.config.geminiApiKey && (state.config.geminiApiKey.includes("AIzaSyDIJ") || state.config.geminiApiKey.includes("AIzaSyD2k") || state.config.geminiApiKey.includes("AIzaSyCiP"))) {
-            state.config.geminiApiKey = "";
-            localStorage.setItem('reportCheckerConfig', JSON.stringify(state.config));
-        }
 
         // GASのコードスニペット
         const gasCode = `function doPost(e) {
@@ -516,7 +510,7 @@ ${content}
                             suggestionMsg = "現在、世界中からGoogleのAIにアクセスが集中しており、処理が追いつかない状態です。数分ほど時間を置いてから再度「一括チェック実行」を押してください。";
                         } else if (e.message.includes('HTTP 429') || e.message.includes('exceeded your current quota')) {
                             reasonMsg = "通信の制限に達しました (HTTP 429)";
-                            suggestionMsg = "【重要】新しいキーでもこのエラーが出る場合、会社のネットワーク(IPアドレス)全体がGoogleから一時的な制限を受けています。Wi-Fiを切ってスマホのテザリング(別回線)で試すか、「設定リセット」をお試しください。";
+                            suggestionMsg = "【重要】1日の利用上限に達したか、過去のキーが他人に悪用され枠が枯渇しています。別のGoogleアカウント（個人のGmail等）で新しいAPIキーを取り直して設定してください。";
                         }
 
                         return { 
@@ -608,9 +602,9 @@ ${content}
                 renderReports(); 
 
                 // ▼▼ レートリミット(無料枠制限)回避のための待機処理 ▼▼
-                // 次のレポートがあり、かつAIの審査を行った場合は「20秒間」休憩する（1分間に最大3件の超安全ペース）
+                // 次のレポートがあり、かつAIの審査を行った場合は「15秒間」休憩する（1分間に最大4件の超安全ペース）
                 if (i < state.reports.length - 1 && (d.content || "").length >= 100) {
-                    await new Promise(resolve => setTimeout(resolve, 20000));
+                    await new Promise(resolve => setTimeout(resolve, 15000));
                 }
             }
 
